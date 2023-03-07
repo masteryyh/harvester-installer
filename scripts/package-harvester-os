@@ -67,10 +67,17 @@ find $BUNDLE_DIR -type f -exec chmod +r {} +
 # build ISO
 ISO_PREFIX="${PROJECT_PREFIX}-${ARCH}"
 cp harvester-release.yaml iso
-yq e ".overlay.isoimage = \"$(pwd)/iso\"" iso.yaml -i
 echo "set harvester_version=${VERSION}" > iso/boot/grub2/harvester.cfg
-luet-makeiso iso.yaml --image "${HARVESTER_OS_IMAGE}" --output ${ARTIFACTS_DIR}/${ISO_PREFIX}
-rm ${ARTIFACTS_DIR}/${ISO_PREFIX}.iso.sha256
+
+elemental build-iso --config-dir "$(pwd)" "docker:${HARVESTER_OS_IMAGE}" -a x86_64 \
+          --bootloader-in-rootfs \
+          --local \
+          -n "${ISO_PREFIX}" \
+          -o "${ARTIFACTS_DIR}" \
+          --overlay-iso "$(pwd)/iso" \
+          -x "-comp xz"
+
+rm -f ${ARTIFACTS_DIR}/${ISO_PREFIX}.iso.sha256
 
 # Extract the squashfs image for PXE boot
 xorriso -osirrox on -indev ${ARTIFACTS_DIR}/${ISO_PREFIX}.iso -extract /rootfs.squashfs ${ARTIFACTS_DIR}/${PROJECT_PREFIX}-rootfs-${ARCH}.squashfs
