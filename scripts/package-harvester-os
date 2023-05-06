@@ -79,8 +79,42 @@ elemental build-iso --config-dir "$(pwd)" "docker:${HARVESTER_OS_IMAGE}" -a x86_
 
 rm -f ${ARTIFACTS_DIR}/${ISO_PREFIX}.iso.sha256
 
-# Extract the squashfs image for PXE boot
-xorriso -osirrox on -indev ${ARTIFACTS_DIR}/${ISO_PREFIX}.iso -extract /rootfs.squashfs ${ARTIFACTS_DIR}/${PROJECT_PREFIX}-rootfs-${ARCH}.squashfs
+# Extract the ISO content to a temp dir for adding SHA512 checksum of the squashfs image
+extract_dir=$(mktemp -d)
+osirrox -indev "${ARTIFACTS_DIR}/${ISO_PREFIX}.iso" -extract / "$extract_dir"/
+
+# Copy the squashfs image for PXE boot
+cp "$extract_dir"/rootfs.squashfs ${ARTIFACTS_DIR}/${PROJECT_PREFIX}-rootfs-${ARCH}.squashfs
+
+# Rebuild the ISO with the checksum file
+rm -f "${ARTIFACTS_DIR}/${ISO_PREFIX}.iso"
+copy_dir_sed_str="$(echo "$extract_dir" | sed 's/\//\\\//g')"
+sha512sum "${extract_dir}/rootfs.squashfs" | sed "s/$copy_dir_sed_str\///g" > "${extract_dir}/rootfs.squashfs.sha512"
+
+dd if=/dev/zero of="${extract_dir}"/uefi.img bs=1k count=4096 status=progress
+loop_device=$(losetup -f)
+losetup "${loop_device}" "${extract_dir}"/uefi.img
+mkfs.vfat "${loop_device}"
+efi_dir=$(mktemp -d)
+mount "${loop_device}" "${efi_dir}"
+cp -r "${extract_dir}"/EFI "${efi_dir}"
+umount "${efi_dir}"
+losetup -d "${loop_device}"
+rm -rf "${efi_dir}"
+
+xorriso -volid "$(yq '.iso.label' iso.yaml)" \
+        -padding 0 \
+        -outdev "${ARTIFACTS_DIR}/${ISO_PREFIX}.iso" \
+        -map "$extract_dir" / \
+        -chmod 0755 -- \
+        -append_partition 2 0xef "$extract_dir"/uefi.img \
+        -boot_image any cat_path=/boot/boot.catalog \
+        -boot_image any cat_hidden=on \
+        -boot_image any efi_path=--interval:appended_partition_2:all:: \
+        -boot_image any platform_id=0xef \
+        -boot_image any appended_part_as=gpt \
+        -boot_image any partition_offset=16
+rm -rf "$extract_dir"
 
 # Write checksum
 cd ${ARTIFACTS_DIR}
