@@ -707,30 +707,24 @@ func genBootstrapResources(config *HarvesterConfig) (map[string]string, error) {
 	return bootstrapConfs, nil
 }
 
-func calcCosPersistentPartSize(diskSizeGiB uint64) (uint64, error) {
-	switch {
-	case diskSizeGiB < HardMinDiskSizeGiB:
-		return 0, fmt.Errorf("disk too small: %dGB. Minimum %dGB is required", diskSizeGiB, HardMinDiskSizeGiB)
-	case diskSizeGiB < SoftMinDiskSizeGiB:
-		d := MinCosPartSizeGiB / float64(SoftMinDiskSizeGiB-HardMinDiskSizeGiB)
-		partSizeGiB := MinCosPartSizeGiB + float64(diskSizeGiB-HardMinDiskSizeGiB)*d
-		return uint64(partSizeGiB), nil
-	default:
-		partSizeGiB := NormalCosPartSizeGiB + ((diskSizeGiB-100)/100)*10
-		if partSizeGiB > 100 {
-			partSizeGiB = 100
-		}
-		return partSizeGiB, nil
+func calcCosPersistentPartSize(diskSizeGiB uint64, persistentSize string) (uint64, error) {
+	partSize, err := util.ParsePartitionSize(diskSizeGiB<<30, persistentSize)
+	if err != nil {
+		return 0, err
 	}
+	return partSize >> 30, nil
 }
 
-func CreateRootPartitioningLayout(elementalConfig *ElementalConfig, devPath string) (*ElementalConfig, error) {
+func CreateRootPartitioningLayout(elementalConfig *ElementalConfig, hvstConfig *HarvesterConfig) (*ElementalConfig, error) {
+	devPath := hvstConfig.Install.Device
+	persistentSize := hvstConfig.Install.PersistentPartitionSize
+
 	diskSizeBytes, err := util.GetDiskSizeBytes(devPath)
 	if err != nil {
 		return nil, err
 	}
 
-	cosPersistentSizeGiB, err := calcCosPersistentPartSize(diskSizeBytes >> 30)
+	cosPersistentSizeGiB, err := calcCosPersistentPartSize(diskSizeBytes>>30, persistentSize)
 	if err != nil {
 		return nil, err
 	}

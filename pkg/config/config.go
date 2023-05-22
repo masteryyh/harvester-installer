@@ -30,11 +30,8 @@ const (
 )
 
 const (
-	SoftMinDiskSizeGiB   = 140
-	HardMinDiskSizeGiB   = 60
-	MinCosPartSizeGiB    = 25
-	NormalCosPartSizeGiB = 50
-	MaxPods              = 200
+	MinDiskSizeGiB = 200
+	MaxPods        = 200
 )
 
 // refer: https://github.com/harvester/harvester/blob/master/pkg/settings/settings.go
@@ -148,6 +145,12 @@ type Install struct {
 	Webhooks  []Webhook            `json:"webhooks,omitempty"`
 	Addons    map[string]Addon     `json:"addons,omitempty"`
 	Harvester HarvesterChartValues `json:"harvester,omitempty"`
+
+	// COS_PERSISTENT partition size, can be a percentage like 20% or straight up disk space like 20Gi or 40960Mi
+	// When indicating with percentage, it will be calculated based on the disk size, after subtracting the COS_OEM, COS_STATE and COS_RECOVERY partition size
+	// When indicating with disk space, it will be used as-is, and will use mebibyte (Mi) or gibibyte (Gi) as unit
+	// instead of megabyte (MB) or gigabyte (GB)
+	PersistentPartitionSize string `json:"persistentPartitionRatio,omitempty"`
 }
 
 type Wifi struct {

@@ -10,97 +10,41 @@ import (
 
 func TestCalcCosPersistentPartSize(t *testing.T) {
 	testCases := []struct {
-		name        string
-		input       uint64
-		output      uint64
-		expectError bool
+		diskSize       uint64
+		persistentSize string
+		output         uint64
+		err            string
 	}{
 		{
-			name:        "Disk too small",
-			input:       50,
-			output:      0,
-			expectError: true,
+			diskSize:       10,
+			persistentSize: "",
+			output:         0,
+			err:            "disk too small: 10GB. Minimum 60GB is required",
 		},
 		{
-			name:        "Disk meet hard requirement",
-			input:       60,
-			output:      25,
-			expectError: false,
+			diskSize:       120,
+			persistentSize: "",
+			output:         43,
 		},
 		{
-			name:        "Disk a bit larger than hard requirement: 80G",
-			input:       80,
-			output:      31,
-			expectError: false,
+			diskSize:       140,
+			persistentSize: "20%",
+			output:         28,
 		},
 		{
-			name:        "Disk a bit larger than hard requirement: 100G",
-			input:       100,
-			output:      37,
-			expectError: false,
-		},
-		{
-			name:        "Disk close to the soft requirement",
-			input:       139,
-			output:      49,
-			expectError: false,
-		},
-		{
-			name:        "Disk meet soft requirement",
-			input:       SoftMinDiskSizeGiB,
-			output:      50,
-			expectError: false,
-		},
-		{
-			name:        "200GiB",
-			input:       200,
-			output:      60,
-			expectError: false,
-		},
-		{
-			name:        "300GiB",
-			input:       300,
-			output:      70,
-			expectError: false,
-		},
-		{
-			name:        "400GiB",
-			input:       400,
-			output:      80,
-			expectError: false,
-		},
-		{
-			name:        "500GiB",
-			input:       500,
-			output:      90,
-			expectError: false,
-		},
-		{
-			name:        "600GiB",
-			input:       600,
-			output:      100,
-			expectError: false,
-		},
-		{
-			name:        "Greater than 600GiB should still get 100",
-			input:       700,
-			output:      100,
-			expectError: false,
+			diskSize:       140,
+			persistentSize: "5%",
+			output:         0,
+			err:            "partition size cannot be smaller than 25Gi",
 		},
 	}
 
 	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			sizeGiB, err := calcCosPersistentPartSize(testCase.input)
-			if testCase.expectError {
-				assert.NotNil(t, err)
-			} else {
-				if err != nil {
-					t.Log(err)
-				}
-				assert.Equal(t, sizeGiB, testCase.output)
-			}
-		})
+		persistentSize, err := calcCosPersistentPartSize(testCase.diskSize, testCase.persistentSize)
+		assert.Equal(t, testCase.output, persistentSize)
+		if err != nil {
+			assert.EqualError(t, err, testCase.err)
+		}
 	}
 }
 

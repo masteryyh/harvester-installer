@@ -173,13 +173,29 @@ func addFooterPanel(c *Console) error {
 }
 
 func showDiskPage(c *Console) error {
+	diskOptions, err := getDiskOptions()
+	if err != nil {
+		return err
+	}
+	showPersistentSizeInput := len(diskOptions) == 1
+
 	if systemIsBIOS() {
-		return showNext(c,
-			forceMBRNotePanel,
-			askForceMBRPanel,
-			askForceMBRTitlePanel,
-			diskPanel,
-		)
+		if showPersistentSizeInput {
+			return showNext(
+				c,
+				askForceMBRPanel,
+				forceMBRNotePanel,
+				askForceMBRTitlePanel,
+				persistentPartSizePanel,
+				persistentPartNotePanel,
+				diskPanel,
+			)
+		}
+		return showNext(c, forceMBRNotePanel, askForceMBRPanel, askForceMBRTitlePanel, diskPanel)
+	}
+
+	if showPersistentSizeInput {
+		return showNext(c, persistentPartNotePanel, persistentPartSizePanel, diskPanel)
 	}
 	return showNext(c, diskPanel)
 }
@@ -192,15 +208,21 @@ func addDiskPanel(c *Console) error {
 	}
 
 	// Select device panel
-	diskV, err := widgets.NewSelect(c.Gui, diskPanel, "", getDiskOptions)
+	diskV, err := widgets.NewDropDown(c.Gui, diskPanel, diskLabel, func() ([]widgets.Option, error) {
+		return diskOpts, err
+	})
 	if err != nil {
 		return err
 	}
 	diskV.PreShow = func() error {
-		diskV.Value = c.config.Install.Device
+		if c.config.Install.Device != "" {
+			diskV.Value = c.config.Install.Device
+		} else {
+			diskV.Value = diskOpts[0].Value
+		}
 		return c.setContentByName(titlePanel, "Choose installation target. Device will be formatted")
 	}
-	setLocation(diskV.Panel, len(diskOpts)+2)
+	setLocation(diskV.Panel, 3)
 	c.AddElement(diskPanel, diskV)
 
 	// Asking force MBR title
@@ -219,9 +241,13 @@ func addDiskPanel(c *Console) error {
 	askForceMBRV.PreShow = func() error {
 		c.Cursor = true
 		if c.config.ForceMBR {
-			askForceMBRV.SetData("yes")
+			if err := askForceMBRV.SetData("yes"); err != nil {
+				return err
+			}
 		} else {
-			askForceMBRV.SetData("no")
+			if err := askForceMBRV.SetData("no"); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -233,6 +259,29 @@ func addDiskPanel(c *Console) error {
 	forceMBRNoteV.Wrap = true
 	setLocation(forceMBRNoteV, 3)
 	c.AddElement(forceMBRNotePanel, forceMBRNoteV)
+
+	showPersistentSizeInput := len(diskOpts) == 1
+	persistentPartSizeV, err := widgets.NewInput(c.Gui, persistentPartSizePanel, persistentPartSizeLabel, false)
+	if err != nil {
+		return err
+	}
+	persistentPartSizeV.PreShow = func() error {
+		c.Gui.Cursor = true
+		if c.config.Install.PersistentPartitionSize != "" {
+			if err := persistentPartSizeV.SetData(c.config.Install.PersistentPartitionSize); err != nil {
+				return err
+			}
+		}
+		return persistentPartSizeV.SetData(defaultPersistentSize)
+	}
+	setLocation(persistentPartSizeV, 3)
+	c.AddElement(persistentPartSizePanel, persistentPartSizeV)
+
+	persistentPartSizeNote := widgets.NewPanel(c.Gui, persistentPartNotePanel)
+	persistentPartSizeNote.Wrap = true
+	setLocation(persistentPartSizeNote, 3)
+	c.AddElement(persistentPartNotePanel, persistentPartSizeNote)
+	persistentPartSizeNote.SetContent(persistentPartNote)
 
 	// Panel for showing validator message
 	diskValidatorV := widgets.NewPanel(c.Gui, diskValidatorPanel)
@@ -254,13 +303,57 @@ func addDiskPanel(c *Console) error {
 			diskValidatorPanel,
 			forceMBRNotePanel,
 			askForceMBRTitlePanel,
+			persistentPartSizePanel,
+			persistentPartNotePanel,
 		)
 	}
-	gotoPrevPage := func(g *gocui.Gui, v *gocui.View) error {
+	gotoPrevPage := func(_ *gocui.Gui, _ *gocui.View) error {
 		closeThisPage()
 		return showNext(c, askCreatePanel)
 	}
-	gotoNextPage := func(g *gocui.Gui, v *gocui.View) error {
+	gotoNextPage := func(_ *gocui.Gui, _ *gocui.View) error {
+		closeThisPage()
+		if canChoose, err := canChooseDataDisk(); err != nil {
+			return err
+		} else if canChoose {
+			return showDataDiskPage(c)
+		} else {
+			return showHostnamePage(c)
+		}
+	}
+
+	confirmDisk := func(g *gocui.Gui, v *gocui.View) error {
+		device, err := diskV.GetData()
+		if err != nil {
+			return err
+		}
+		if err := validateDiskSize(device); err != nil {
+			return updateValidatorMessage(err.Error())
+		}
+
+		c.config.Install.Device = device
+		if systemIsBIOS() {
+			if err := c.setContentByName(forceMBRNotePanel, forceMBRNote); err != nil {
+				return err
+			}
+			return showNext(c, askForceMBRPanel)
+		}
+
+		if !showPersistentSizeInput {
+			return gotoNextPage(g, v)
+		}
+		return showNext(c, persistentPartSizePanel)
+	}
+
+	// Keybindings
+	diskV.KeyBindings = map[gocui.Key]func(*gocui.Gui, *gocui.View) error{
+		gocui.KeyEnter:     confirmDisk,
+		gocui.KeyArrowDown: confirmDisk,
+		gocui.KeyArrowUp:   gotoPrevPage,
+		gocui.KeyEsc:       gotoPrevPage,
+	}
+
+	forceMBRConfirm := func(g *gocui.Gui, v *gocui.View) error {
 		forceMBR, err := askForceMBRV.GetData()
 		if err != nil {
 			return err
@@ -273,64 +366,60 @@ func addDiskPanel(c *Console) error {
 			if diskTooLargeForMBR {
 				return updateValidatorMessage("Disk too large for MBR. Must be less than 2TiB")
 			}
+			c.config.ForceMBR = forceMBR == "yes"
 		}
-		c.config.ForceMBR = (forceMBR == "yes")
 
-		closeThisPage()
-		if canChoose, err := canChooseDataDisk(); err != nil {
-			return err
-		} else if canChoose {
-			return showDataDiskPage(c)
-		} else {
-			return showHostnamePage(c)
+		if showPersistentSizeInput {
+			return showNext(c, persistentPartNotePanel, persistentPartSizePanel)
 		}
+		return gotoNextPage(g, v)
 	}
-
-	// Keybindings
-	diskV.KeyBindings = map[gocui.Key]func(*gocui.Gui, *gocui.View) error{
-		gocui.KeyEnter: func(g *gocui.Gui, v *gocui.View) error {
-			device, err := diskV.GetData()
-			if err != nil {
-				return err
-			}
-			if err := validateDiskSize(device); err != nil {
-				return updateValidatorMessage(err.Error())
-			}
-
-			if err := validateDiskSizeSoft(device); err != nil && !userInputData.HasWarnedDiskSize {
-				userInputData.HasWarnedDiskSize = true
-				return updateValidatorMessage(fmt.Sprintf("%s. Press Enter to continue.", err.Error()))
-			}
-
-			c.config.Install.Device = device
-
-			if systemIsBIOS() {
-				c.setContentByName(forceMBRNotePanel, forceMBRNote)
-				return showNext(c, askForceMBRPanel)
-			}
-			return gotoNextPage(g, v)
-		},
-		gocui.KeyArrowDown: func(g *gocui.Gui, v *gocui.View) error {
-			userInputData.HasWarnedDiskSize = false
-			return updateValidatorMessage("")
-		},
-		gocui.KeyArrowUp: func(g *gocui.Gui, v *gocui.View) error {
-			userInputData.HasWarnedDiskSize = false
-			return updateValidatorMessage("")
-		},
-		gocui.KeyEsc: gotoPrevPage,
-	}
-
 	askForceMBRV.KeyBindings = map[gocui.Key]func(*gocui.Gui, *gocui.View) error{
-		gocui.KeyEnter: gotoNextPage,
+		gocui.KeyEnter: forceMBRConfirm,
 		gocui.KeyArrowUp: func(g *gocui.Gui, v *gocui.View) error {
 			//XXX Must close diskPanel first or gocui would crash
 			c.CloseElement(diskPanel)
 			return showNext(c, diskPanel)
 		},
-		gocui.KeyArrowDown: gotoNextPage,
+		gocui.KeyArrowDown: forceMBRConfirm,
 		gocui.KeyEsc:       gotoPrevPage,
 	}
+
+	persistentPartSizeConfirm := func(g *gocui.Gui, v *gocui.View) error {
+		diskSizeBytes, err := util.GetDiskSizeBytes(c.config.Install.Device)
+		if err != nil {
+			return err
+		}
+
+		sizeString, err := persistentPartSizeV.GetData()
+		if err != nil {
+			return err
+		}
+		if _, err := util.ParsePartitionSize(diskSizeBytes, sizeString); err != nil {
+			logrus.Infof("persistentPartSizeConfirm error intercepted: %s", err.Error())
+			return updateValidatorMessage(err.Error())
+		}
+		c.config.Install.PersistentPartitionSize = sizeString
+		return gotoNextPage(g, v)
+	}
+	persistentPartSizeV.KeyBindings = map[gocui.Key]func(*gocui.Gui, *gocui.View) error{
+		gocui.KeyEnter:     persistentPartSizeConfirm,
+		gocui.KeyArrowDown: persistentPartSizeConfirm,
+		gocui.KeyArrowUp: func(g *gocui.Gui, v *gocui.View) error {
+			logrus.Infof("persistentPartSizeV.KeyBindings: KeyArrowUp executed")
+			if systemIsBIOS() {
+				logrus.Infof("persistentPartSizeV.KeyBindings: systemIsBIOS() is true")
+				c.CloseElements(askForceMBRPanel)
+				return showNext(c, askForceMBRPanel)
+			}
+
+			logrus.Infof("persistentPartSizeV.KeyBindings: systemIsBIOS() is false")
+			c.CloseElements(diskPanel)
+			return showNext(c, diskPanel)
+		},
+		gocui.KeyEsc: gotoPrevPage,
+	}
+
 	return nil
 }
 
@@ -399,16 +488,36 @@ func getDataDiskOptions(hvstConfig *config.HarvesterConfig) ([]widgets.Option, e
 }
 
 func addDataDiskPanel(c *Console) error {
-	dataDiskV, err := widgets.NewSelect(c.Gui, dataDiskPanel, "", func() ([]widgets.Option, error) {
-		return getDataDiskOptions(c.config)
+	setLocation := createVerticalLocator(c)
+
+	diskOpts, err := getDataDiskOptions(c.config)
+	dataDiskV, err := widgets.NewDropDown(c.Gui, dataDiskPanel, dataDiskLabel, func() ([]widgets.Option, error) {
+		return diskOpts, err
 	})
 	if err != nil {
 		return err
 	}
 	dataDiskV.PreShow = func() error {
-		return dataDiskV.SetData(c.config.Install.DataDisk)
+		if c.config.Install.DataDisk != "" {
+			return dataDiskV.SetData(c.config.Install.DataDisk)
+		}
+		return dataDiskV.SetData(c.config.Install.Device)
 	}
+	setLocation(dataDiskV, len(diskOpts)+2)
 	c.AddElement(dataDiskPanel, dataDiskV)
+
+	persistentPartSizeV, err := widgets.NewInput(c.Gui, persistentPartSizePanel, persistentPartSizeLabel, false)
+	if err != nil {
+		return err
+	}
+	setLocation(persistentPartSizeV, 3)
+	c.AddElement(persistentPartSizePanel, persistentPartSizeV)
+
+	persistentPartSizeNote := widgets.NewPanel(c.Gui, persistentPartNotePanel)
+	persistentPartSizeNote.SetContent(persistentPartNote)
+	persistentPartSizeNote.Wrap = true
+	setLocation(persistentPartSizeNote, 8)
+	c.AddElement(persistentPartNotePanel, persistentPartSizeNote)
 
 	dataDiskValidatorV := widgets.NewPanel(c.Gui, dataDiskValidatorPanel)
 	dataDiskValidatorV.FgColor = gocui.ColorRed
@@ -421,7 +530,12 @@ func addDataDiskPanel(c *Console) error {
 
 	closeThisPage := func() {
 		userInputData.HasWarnedDataDiskSize = false
-		c.CloseElements(dataDiskPanel, dataDiskValidatorPanel)
+		c.CloseElements(
+			dataDiskPanel,
+			dataDiskValidatorPanel,
+			persistentPartSizePanel,
+			persistentPartNotePanel,
+		)
 	}
 
 	gotoNextPage := func() error {
@@ -429,40 +543,62 @@ func addDataDiskPanel(c *Console) error {
 		return showHostnamePage(c)
 	}
 
-	gotoPrevPage := func() error {
+	gotoPrevPage := func(g *gocui.Gui, v *gocui.View) error {
 		closeThisPage()
 		return showDiskPage(c)
 	}
 
-	dataDiskV.KeyBindings = map[gocui.Key]func(*gocui.Gui, *gocui.View) error{
-		gocui.KeyEnter: func(g *gocui.Gui, v *gocui.View) error {
-			device, err := dataDiskV.GetData()
-			if err != nil {
-				return err
-			}
+	dataDiskConfirm := func(g *gocui.Gui, v *gocui.View) error {
+		device, err := dataDiskV.GetData()
+		if err != nil {
+			return err
+		}
 
-			if err := validateDiskSize(device); err != nil {
+		if device == c.config.Install.Device {
+			if err := validateDiskSize(c.config.Install.Device); err != nil {
 				return updateValidatorMessage(err.Error())
-			}
-			if err := validateDiskSizeSoft(device); err != nil && !userInputData.HasWarnedDataDiskSize {
-				userInputData.HasWarnedDataDiskSize = true
-				return updateValidatorMessage(fmt.Sprintf("%s. Press Enter to continue.", err.Error()))
 			}
 
 			c.config.Install.DataDisk = device
-			return gotoNextPage()
-		},
-		gocui.KeyArrowDown: func(g *gocui.Gui, v *gocui.View) error {
-			userInputData.HasWarnedDataDiskSize = false
-			return updateValidatorMessage("")
-		},
+			return showNext(c, persistentPartSizePanel, persistentPartNotePanel)
+		}
+
+		c.config.Install.DataDisk = device
+		return gotoNextPage()
+	}
+	dataDiskV.KeyBindings = map[gocui.Key]func(*gocui.Gui, *gocui.View) error{
+		gocui.KeyEnter:     dataDiskConfirm,
+		gocui.KeyArrowDown: dataDiskConfirm,
+		gocui.KeyArrowUp:   gotoPrevPage,
+		gocui.KeyEsc:       gotoPrevPage,
+	}
+
+	persistentPartSizeConfirm := func(g *gocui.Gui, v *gocui.View) error {
+		persistentSize, err := persistentPartSizeV.GetData()
+		if err != nil {
+			return err
+		}
+
+		diskSize, err := util.GetDiskSizeBytes(c.config.Install.Device)
+		if err != nil {
+			return err
+		}
+
+		if _, err := util.ParsePartitionSize(diskSize, persistentSize); err != nil {
+			return err
+		}
+
+		c.config.Install.PersistentPartitionSize = persistentSize
+		return gotoNextPage()
+	}
+	persistentPartSizeV.KeyBindings = map[gocui.Key]func(*gocui.Gui, *gocui.View) error{
+		gocui.KeyEnter:     persistentPartSizeConfirm,
+		gocui.KeyArrowDown: persistentPartSizeConfirm,
 		gocui.KeyArrowUp: func(g *gocui.Gui, v *gocui.View) error {
-			userInputData.HasWarnedDataDiskSize = false
-			return updateValidatorMessage("")
+			c.CloseElements(dataDiskPanel)
+			return showNext(c, dataDiskPanel)
 		},
-		gocui.KeyEsc: func(g *gocui.Gui, v *gocui.View) error {
-			return gotoPrevPage()
-		},
+		gocui.KeyEsc: gotoPrevPage,
 	}
 
 	return nil
